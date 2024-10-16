@@ -1,62 +1,92 @@
 <#
-Script Name: ENG-CancellazioneAADUserWebuild.ps1
-Description: Questo script PowerShell è progettato per eliminare gli utenti da Azure Active Directory (AAD) utilizzando un elenco fornito in un file Excel.
+.SYNOPSIS
+    Script per la cancellazione di utenti da Azure Active Directory (AAD) utilizzando un elenco fornito in un file Excel.
 
-Author: Nicolò Bertucci
+.DESCRIPTION
+    Questo script PowerShell è progettato per eliminare gli utenti da Azure Active Directory (AAD) 
+    utilizzando un elenco fornito in un file Excel.
 
-Date: 17/04/2024
-Last edit date: 25/06/2024
+.AUTHOR
+    Nicolò Bertucci
 
-Patch notes:
-- Aggiunto sistema log
-- Fix cancellazione utenti guest che contengono il singolo apice
+.DATE
+    17/04/2024
+.LAST EDIT DATE
+    25/06/2024
+
+.PATCH NOTES
+    - Aggiunto sistema log
+    - Fix cancellazione utenti guest che contengono il singolo apice
 #>
 
 # Importa il modulo necessario per lavorare con file Excel
-Import-Module -Name ImportExcel
+Import-Module -Name ImportExcel -ErrorAction Stop
 
-Connect-AzureAD | Out-Null
+# Connessione a Azure AD
+try {
+    Connect-AzureAD | Out-Null
+    Write-Host "[INFO] Connessione a Azure AD riuscita."
+} catch {
+    Write-Error "[ERROR] Impossibile connettersi a Azure AD: $_"
+    exit
+}
 
-# Controllo esistenza folder logs
-if (-not (Test-Path ".\logs")) {
-    # Creazione della folder qualora non esistesse
-    New-Item -ItemType Directory -Force -Path ".\logs" | Out-Null
+# Controllo esistenza della cartella logs e creazione se non esiste
+$logFolder = ".\logs"
+if (-not (Test-Path $logFolder)) {
+    New-Item -ItemType Directory -Force -Path $logFolder | Out-Null
 }
 
 # Definizione funzione di Log dello script
 $DateFile = (Get-Date).ToString("yyyyMMdd-HHmm")
-$Logfile = ".\logs\" + $DateFile + "-cancellazioneAADGuestUsersWebuild.log"
+$LogFile = Join-Path -Path $logFolder -ChildPath "$DateFile-cancellazioneAADGuestUsersWebuild.log"
+
 function WriteLog {
-    Param ([string]$LogString)
+    param ([string]$LogString)
     $TimeLog = (Get-Date).ToString("yyyy/MM/dd HH:mm:ss")
     $LogMessage = "$TimeLog $LogString"
-    Add-Content $LogFile -Value $LogMessage
+    Add-Content -Path $LogFile -Value $LogMessage
 }
 
-WriteLog "[INFO] Cancellazione utenti Guest"
+WriteLog "[INFO] Inizio cancellazione utenti Guest."
 
 ### MAIN ###
 
-# Ottiene i dati dal file di input
-$file = $args[0]
-$data = Import-Excel -Path $file
+# Ottiene il file di input dall'argomento
+if ($args.Count -eq 0) {
+    Write-Error "[ERROR] Nessun file di input fornito."
+    exit
+}
 
+$file = $args[0]
+
+# Importa i dati dal file di input
+try {
+    $data = Import-Excel -Path $file -ErrorAction Stop
+} catch {
+    Write-Error "[ERROR] Impossibile importare il file Excel: $_"
+    exit
+}
+
+# Estrae gli indirizzi email
 $column = $data | Get-Member -MemberType NoteProperty | Select-Object -ExpandProperty Name
 $mailboxes = $data | Select-Object -ExpandProperty $column
 
 $guests = @()
 
+# Creazione degli indirizzi email per gli utenti Guest
 foreach ($mailbox in $mailboxes) {
     $tmp = $mailbox -replace "@", "_"
     $tmp += "#EXT#@saliniimpregilo.onmicrosoft.com"
     $guests += $tmp
 }
 
+# Cancellazione degli utenti Guest
 foreach ($guest in $guests) {
     try {
-        $user = Get-AzureADUser -Filter "UserPrincipalName eq '$($guest -replace "'", "''")'"
+        $user = Get-AzureADUser -Filter "UserPrincipalName eq '$($guest -replace "'", "''")'" -ErrorAction Stop
         if ($user) {
-            Remove-AzureADUser -ObjectId $user.ObjectId
+            Remove-AzureADUser -ObjectId $user.ObjectId -Confirm:$false
             Write-Host "Cancellato il seguente utente: $guest"
             WriteLog "[INFO] Cancellato il seguente utente: $guest"
         } else {
@@ -64,7 +94,9 @@ foreach ($guest in $guests) {
             WriteLog "[WARNING] Utente non trovato: $guest"
         }
     } catch {
-        Write-Warning "Errore durante la cancellazione dell'utente: $guest"
-        WriteLog "[ERROR] Errore durante la cancellazione dell'utente: $guest"
+        Write-Warning "Errore durante la cancellazione dell'utente: $guest - $_"
+        WriteLog "[ERROR] Errore durante la cancellazione dell'utente: $guest - $_"
     }
 }
+
+WriteLog "[INFO] Cancellazione completata."
